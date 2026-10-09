@@ -1,0 +1,96 @@
+name: release
+
+# Builds icue-evga-sync-setup-<version>.exe for a vYEAR.MINOR.PATCH tag (CalVer)
+# and publishes it,
+# with a SHA256SUMS.txt, as that tag's GitHub Release.
+#
+# This repository is a published snapshot. Tags arrive from the maintainer's
+# release pipeline once a release is approved there; workflow_dispatch rebuilds
+# an existing tag (it replaces that release's assets, never its notes).
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and publish, e.g. v1.0.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & publish the setup exe
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write   # creates the release
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      # Read through env, never interpolated into the script.
+      - name: Version from the tag
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:TAG -match '^v(\d+\.\d+\.\d+)$') {
+            "VERSION=$($Matches[1])" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "Refusing to build: '$env:TAG' is not vYEAR.MINOR.PATCH"
+          }
+
+      # CMake fetches the iCUE SDK zip (pinned by SHA-256 in CMakeLists.txt).
+      - name: Build, test and package (MSVC x64)
+        shell: cmd
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+          if not defined VSDIR (echo ::error::No Visual Studio with the x64 C++ tools found& exit /b 1)
+          call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DICUE_EVGA_SYNC_VERSION=%VERSION% || exit /b 1
+          cmake --build build || exit /b 1
+          ctest --test-dir build --output-on-failure || exit /b 1
+          copy /y build\icue-evga-sync-setup.exe "icue-evga-sync-setup-%VERSION%.exe" || exit /b 1
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "icue-evga-sync-setup-$env:VERSION.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Set-Content -Encoding ascii SHA256SUMS.txt
+          $notes = @'
+          Mirrors the lighting iCUE shows on your Corsair devices onto an EVGA RTX 30-series card with the v3 RGB controller.
+
+          ### Install
+          Download **icue-evga-sync-setup-VERSION.exe** and run it. It is a per-user installer for Windows 10/11 x64 and needs no admin rights. It installs to `%LOCALAPPDATA%\Programs\icue-evga-sync`, starts at every logon, and appears in Settings > Apps for uninstalling. Run a newer setup to upgrade, or add `--quiet` to install without dialogs.
+
+          Before you start, turn on **iCUE > Settings > General > Enable SDK**. See the README for mapping Corsair devices onto the card's zones.
+
+          The installer is not code-signed, so SmartScreen may ask you to confirm. You can check it against `SHA256SUMS.txt`.
+          '@
+          $notes.Replace('VERSION', $env:VERSION) | Set-Content -Encoding utf8 notes.md
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $exe SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $env:TAG $exe SHA256SUMS.txt --repo $env:GITHUB_REPOSITORY --verify-tag `
+              --title "icue-evga-sync $env:VERSION" --notes-file notes.md
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
