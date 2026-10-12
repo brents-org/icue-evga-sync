@@ -85,7 +85,10 @@ icue-evga-syncctl --version
 `--install` (and the setup exe, which runs the same code) does three things:
 
 - registers a Task Scheduler logon task called `icue-evga-sync`, which runs as you, in
-  your session, at least privilege, with no 72-hour time limit, and restarts on failure
+  your session, at least privilege, with no 72-hour time limit, and restarts on failure.
+  It also starts 30 seconds after a cancelled shutdown or restart (System event 1073 from
+  `User32`): Windows can end the daemon before the shutdown is cancelled, and then no
+  logon happens to start it again
 - adds an `HKCU` Apps & features entry
 - starts the daemon
 

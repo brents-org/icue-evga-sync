@@ -73,13 +73,21 @@ int RunSchtasks(const std::wstring& args) {
 
 bool WriteTaskXml(const std::wstring& path, const std::wstring& user, const std::wstring& exe) {
     // Logon trigger, interactive token, least privilege, no 72h execution cap.
+    // The second trigger is User32 event 1073, "restart/shutdown failed". An aborted
+    // shutdown can still deliver WM_ENDSESSION(TRUE) and kill the daemon while the
+    // session lives on, and the logon trigger would not bring it back.
     std::wstring xml =
         L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
         L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
         L"  <RegistrationInfo><Description>Mirrors iCUE lighting onto the EVGA GPU "
         L"(github.com/brents-org/icue-evga-sync).</Description></RegistrationInfo>\r\n"
         L"  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + XmlEscape(user) +
-        L"</UserId><Delay>PT10S</Delay></LogonTrigger></Triggers>\r\n"
+        L"</UserId><Delay>PT10S</Delay></LogonTrigger>\r\n"
+        L"    <EventTrigger><Enabled>true</Enabled><Subscription>"
+        L"&lt;QueryList&gt;&lt;Query Id=\"0\" Path=\"System\"&gt;&lt;Select Path=\"System\"&gt;"
+        L"*[System[Provider[@Name='User32'] and EventID=1073]]"
+        L"&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;"
+        L"</Subscription><Delay>PT30S</Delay></EventTrigger></Triggers>\r\n"
         L"  <Principals><Principal id=\"Author\"><UserId>" + XmlEscape(user) +
         L"</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\r\n"
         L"  <Settings>\r\n"
